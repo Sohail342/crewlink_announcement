@@ -1,3 +1,4 @@
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -17,7 +18,8 @@ from apps.announcements.serializers import (
     AnnouncementSerializer,
     SendAnnouncementSerializer,
 )
-from apps.announcements.services import queue_announcement
+from apps.announcements.services import create_recipients
+from apps.announcements.tasks import send_announcement
 
 
 class AnnouncementViewSet(LocalScopedQuerySetMixin, viewsets.ModelViewSet):
@@ -64,12 +66,18 @@ class AnnouncementViewSet(LocalScopedQuerySetMixin, viewsets.ModelViewSet):
         announcement = self.get_object()
         serializer = SendAnnouncementSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        queue_announcement(
-            announcement,
-            classification=serializer.validated_data.get("classification"),
+        announcement_id = announcement.id
+        classification = serializer.validated_data.get("classification")
+
+        with transaction.atomic():
+            announcement.status = Announcement.Status.QUEUED
+            announcement.save(update_fields=["status"])
+            create_recipients(announcement, classification=classification)
+            transaction.on_commit(lambda: send_announcement.delay(announcement_id))
+
+        return Response(
+            {"detail": "sending to members", "status": Announcement.Status.SENDING}
         )
-        announcement.refresh_from_db()
-        return Response(AnnouncementSerializer(announcement).data)
 
     @action(detail=True, methods=["get"])
     def counts(self, request, pk=None):

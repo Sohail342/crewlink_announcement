@@ -1,3 +1,4 @@
+from django.test import override_settings
 from django.urls import reverse
 from rest_framework import status
 from rest_framework.test import APITestCase
@@ -130,6 +131,33 @@ class AnnouncementIsolationTests(APITestCase):
         )
         self.assertEqual(recipient_response.status_code, status.HTTP_404_NOT_FOUND)
 
+    def test_send_creates_pending_recipients_before_worker(self):
+        announcement = Announcement.objects.create(
+            local=self.local_a,
+            created_by=self.leader_a,
+            title="Queued first",
+            body="Body",
+            push_preview="Preview",
+        )
+        self.client.force_authenticate(user=self.leader_a)
+        response = self.client.post(
+            reverse("announcement-send", args=[announcement.id])
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["detail"], "sending to members")
+        recipients = AnnouncementRecipient.objects.filter(announcement=announcement)
+        self.assertEqual(recipients.count(), 1)
+        self.assertEqual(
+            recipients.get().delivery_status,
+            AnnouncementRecipient.DeliveryStatus.PENDING,
+        )
+        announcement.refresh_from_db()
+        self.assertEqual(announcement.status, Announcement.Status.QUEUED)
+
+    @override_settings(
+        CELERY_TASK_ALWAYS_EAGER=True,
+        CELERY_TASK_EAGER_PROPAGATES=True,
+    )
     def test_duplicate_send_does_not_create_duplicate_recipients(self):
         self.client.force_authenticate(user=self.leader_a)
         create_response = self.client.post(
@@ -145,21 +173,29 @@ class AnnouncementIsolationTests(APITestCase):
         self.assertEqual(create_response.status_code, status.HTTP_201_CREATED)
         announcement_id = create_response.data["id"]
 
-        first_send = self.client.post(
-            reverse("announcement-send", args=[announcement_id])
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            first_send = self.client.post(
+                reverse("announcement-send", args=[announcement_id])
+            )
         self.assertEqual(first_send.status_code, status.HTTP_200_OK)
-        self.assertEqual(first_send.data["status"], Announcement.Status.QUEUED)
+        self.assertEqual(first_send.data["detail"], "sending to members")
+        self.assertEqual(first_send.data["status"], Announcement.Status.SENDING)
+        recipients = AnnouncementRecipient.objects.filter(
+            announcement_id=announcement_id
+        )
+        self.assertEqual(recipients.count(), 1)
         self.assertEqual(
-            AnnouncementRecipient.objects.filter(
-                announcement_id=announcement_id
-            ).count(),
-            1,
+            recipients.get().delivery_status,
+            AnnouncementRecipient.DeliveryStatus.SENT,
         )
+        announcement = Announcement.objects.get(pk=announcement_id)
+        self.assertEqual(announcement.status, Announcement.Status.SENT)
+        self.assertIsNotNone(announcement.sent_at)
 
-        second_send = self.client.post(
-            reverse("announcement-send", args=[announcement_id])
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            second_send = self.client.post(
+                reverse("announcement-send", args=[announcement_id])
+            )
         self.assertEqual(second_send.status_code, status.HTTP_200_OK)
         self.assertEqual(
             AnnouncementRecipient.objects.filter(
@@ -168,6 +204,10 @@ class AnnouncementIsolationTests(APITestCase):
             1,
         )
 
+    @override_settings(
+        CELERY_TASK_ALWAYS_EAGER=True,
+        CELERY_TASK_EAGER_PROPAGATES=True,
+    )
     def test_send_scopes_recipients_to_own_local_active_members(self):
         retired = User.objects.create_user(
             email="retired@a.example",
@@ -191,13 +231,20 @@ class AnnouncementIsolationTests(APITestCase):
             push_preview="Preview",
         )
         self.client.force_authenticate(user=self.leader_a)
-        response = self.client.post(
-            reverse("announcement-send", args=[announcement.id])
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        recipient_member_ids = list(
-            AnnouncementRecipient.objects.filter(announcement=announcement).values_list(
-                "member_id", flat=True
+        with self.captureOnCommitCallbacks(execute=True):
+            response = self.client.post(
+                reverse("announcement-send", args=[announcement.id])
             )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["detail"], "sending to members")
+        recipients = AnnouncementRecipient.objects.filter(announcement=announcement)
+        self.assertEqual(
+            list(recipients.values_list("member_id", flat=True)),
+            [self.member_a.id],
         )
-        self.assertEqual(recipient_member_ids, [self.member_a.id])
+        self.assertEqual(
+            recipients.get().delivery_status,
+            AnnouncementRecipient.DeliveryStatus.SENT,
+        )
+        announcement.refresh_from_db()
+        self.assertEqual(announcement.status, Announcement.Status.SENT)
