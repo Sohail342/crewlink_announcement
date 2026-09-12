@@ -20,6 +20,7 @@ from apps.announcements.serializers import (
 )
 from apps.announcements.services import create_recipients
 from apps.announcements.tasks import send_announcement
+from apps.announcements.ai_draft import generate_announcement_draft, AINotConfigured
 
 
 class AnnouncementViewSet(LocalScopedQuerySetMixin, viewsets.ModelViewSet):
@@ -27,9 +28,17 @@ class AnnouncementViewSet(LocalScopedQuerySetMixin, viewsets.ModelViewSet):
     serializer_class = AnnouncementSerializer
     http_method_names = ["get", "post", "put", "patch", "head", "options"]
     local_filter_field = "local_id"
+    lookup_value_regex = r"[0-9]+"
 
     def get_permissions(self):
-        if self.action in ("create", "update", "partial_update", "send", "counts"):
+        if self.action in (
+            "create",
+            "update",
+            "partial_update",
+            "send",
+            "counts",
+            "draft",
+        ):
             return [IsLeadership()]
         return [IsLeadershipOrMember()]
 
@@ -64,6 +73,14 @@ class AnnouncementViewSet(LocalScopedQuerySetMixin, viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def send(self, request, pk=None):
         announcement = self.get_object()
+        if announcement.status not in (
+            Announcement.Status.DRAFT,
+            Announcement.Status.QUEUED,
+        ):
+            return Response(
+                {"detail": "Only draft or queued announcements can be sent."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         serializer = SendAnnouncementSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         announcement_id = announcement.id
@@ -94,6 +111,23 @@ class AnnouncementViewSet(LocalScopedQuerySetMixin, viewsets.ModelViewSet):
                 ).count(),
             }
         )
+
+    @action(detail=False, methods=["post"])
+    def draft(self, request):
+        note = (request.data.get("note") or "").strip()
+        if not note:
+            return Response(
+                {"detail": "Enter a leadership note before generating a draft."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            draft = generate_announcement_draft(note)
+        except AINotConfigured:  # noqa
+            return Response(
+                {"detail": "AI not configured"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        return Response(draft)
 
 
 class AnnouncementRecipientViewSet(

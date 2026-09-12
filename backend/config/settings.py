@@ -89,6 +89,9 @@ CELERY_TASK_REJECT_ON_WORKER_LOST = True
 CELERY_WORKER_PREFETCH_MULTIPLIER = 1
 CELERY_TASK_TRACK_STARTED = True
 
+# Gemini (Optional)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", None)
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators

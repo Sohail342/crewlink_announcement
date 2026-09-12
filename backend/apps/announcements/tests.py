@@ -196,11 +196,51 @@ class AnnouncementIsolationTests(APITestCase):
             second_send = self.client.post(
                 reverse("announcement-send", args=[announcement_id])
             )
-        self.assertEqual(second_send.status_code, status.HTTP_200_OK)
+        self.assertEqual(second_send.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertEqual(
             AnnouncementRecipient.objects.filter(
                 announcement_id=announcement_id
             ).count(),
+            1,
+        )
+
+    def test_send_rejects_sent_or_sending_announcement(self):
+        self.client.force_authenticate(user=self.leader_a)
+        for current_status in (
+            Announcement.Status.SENDING,
+            Announcement.Status.SENT,
+        ):
+            announcement = Announcement.objects.create(
+                local=self.local_a,
+                created_by=self.leader_a,
+                title=f"{current_status} callout",
+                body="Body",
+                push_preview="Preview",
+                status=current_status,
+            )
+            response = self.client.post(
+                reverse("announcement-send", args=[announcement.id])
+            )
+            self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+            announcement.refresh_from_db()
+            self.assertEqual(announcement.status, current_status)
+
+    def test_queued_send_can_be_retried(self):
+        announcement = Announcement.objects.create(
+            local=self.local_a,
+            created_by=self.leader_a,
+            title="Retry queued",
+            body="Body",
+            push_preview="Preview",
+            status=Announcement.Status.QUEUED,
+        )
+        self.client.force_authenticate(user=self.leader_a)
+        response = self.client.post(
+            reverse("announcement-send", args=[announcement.id])
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(
+            AnnouncementRecipient.objects.filter(announcement=announcement).count(),
             1,
         )
 

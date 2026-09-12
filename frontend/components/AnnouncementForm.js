@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { api, errorMessage } from "../lib/api";
-import { PUSH_PREVIEW_MAX, buildDraftFromNote } from "../lib/draft";
+import { PUSH_PREVIEW_MAX } from "../lib/draft";
 import { Button } from "./Button";
 import { ErrorBanner } from "./ErrorBanner";
 import { Field } from "./Field";
@@ -21,6 +21,7 @@ export function AnnouncementForm({ token, locals, members, onChanged }) {
   const [statusMessage, setStatusMessage] = useState("");
   const [saving, setSaving] = useState(false);
   const [sending, setSending] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const [draftId, setDraftId] = useState(null);
 
   useEffect(() => {
@@ -58,18 +59,34 @@ export function AnnouncementForm({ token, locals, members, onChanged }) {
     return Object.keys(next).length === 0;
   }
 
-  function generateDraft() {
+  async function generateDraft() {
     setFormError("");
     setStatusMessage("");
-    const draft = buildDraftFromNote(note);
-    if (!draft) {
+    if (!note.trim()) {
       setFormError("Enter a leadership note before generating a draft.");
       return;
     }
-    setTitle(draft.title);
-    setBody(draft.body);
-    setPushPreview(draft.push_preview);
-    setStatusMessage("Draft generated. Review and edit before sending.");
+    setGenerating(true);
+    try {
+      const { ok, status, data } = await api("/api/announcements/ai-draft/", {
+        method: "POST",
+        token,
+        body: { note: note.trim() },
+      });
+      if (!ok) {
+        throw new Error(errorMessage(data, status));
+      }
+      setTitle(data.title || "");
+      setBody(data.body || "");
+      setPushPreview(data.push_preview || "");
+      setStatusMessage("Draft generated. Review and edit before sending.");
+    } catch (error) {
+      setFormError(
+        `${error.message} You can still enter title, body, and push preview manually.`,
+      );
+    } finally {
+      setGenerating(false);
+    }
   }
 
   async function saveDraftRecord() {
@@ -154,15 +171,15 @@ export function AnnouncementForm({ token, locals, members, onChanged }) {
     }
   }
 
-  const busy = saving || sending;
+  const busy = saving || sending || generating;
 
   return (
     <form className="card" onSubmit={handleSend}>
       <h2>Create announcement</h2>
       <p className="muted">
-        Enter a title and body, or paste a messy note and generate a draft.
-        AI output is always a draft. Review it before sending. The API
-        enforces local and leadership access.
+        Enter a title and body, or paste a messy note and generate an AI
+        draft. AI output is always a draft. Review it before sending. If
+        AI is unavailable, create the announcement manually.
       </p>
 
       <ErrorBanner message={formError} />
@@ -171,7 +188,7 @@ export function AnnouncementForm({ token, locals, members, onChanged }) {
       <Field
         id="note"
         label="Leadership note (optional)"
-        hint="Used only to generate a reviewable title, body, and push preview."
+        hint="Sent to the AI draft endpoint to produce a reviewable title, body, and push preview."
       >
         <textarea
           id="note"
@@ -181,8 +198,13 @@ export function AnnouncementForm({ token, locals, members, onChanged }) {
         />
       </Field>
       <div className="row">
-        <Button type="button" variant="secondary" onClick={generateDraft} disabled={busy}>
-          Generate draft
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={generateDraft}
+          disabled={busy}
+        >
+          {generating ? "Generating…" : "Generate draft"}
         </Button>
       </div>
 
