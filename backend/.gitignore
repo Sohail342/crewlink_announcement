@@ -17,3 +17,17 @@ wheels/
 
 # ruff cache
 .ruff_cache/
+
+# python cache
+__pycache__/
+.pytest_cache/
+*.py[oc]
+
+# django cache
+*.log
+*.log.*
+*.log.*.*
+*.log.*.*.*
+*.log.*.*.*.*
+*.log.*.*.*.*.*
+*.log.*.*.*.*.*.*
